@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quick Draw Doodle Classifier</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Quick Draw Doodle Classifier</h1>
+    <p>Draw something and AI will guess what it is</p>
+  </header>
+
+  <main class="app">
+    <section class="canvas-section">
+      <canvas id="drawing-canvas" width="400" height="400"></canvas>
+      <div class="canvas-controls">
+        <button class="btn btn--primary" id="clear-btn">Clear</button>
+        <button class="btn" id="undo-btn">Undo</button>
+      </div>
+      <div class="debug-preview">
+        <span class="debug-label">Model sees:</span>
+        <canvas id="preview-canvas" width="28" height="28"></canvas>
+      </div>
+    </section>
+
+    <section class="results-section">
+      <h2>Predictions</h2>
+      <div id="predictions">
+        <p class="placeholder-text">Draw something to start...</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="status" class="status-bar loading">Loading model...</div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
