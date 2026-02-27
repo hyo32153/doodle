@@ -1,6 +1,6 @@
 import { CLASSES } from './classes.js';
 
-const MODEL_URL = 'https://yining1023.github.io/doodleNet/demo/DoodleClassifier_345/model/model.json';
+const MODEL_URL = './model/model.json';
 const TOP_K = 3;
 const DEBOUNCE_MS = 300;
 const MODEL_INPUT_SIZE = 28;
