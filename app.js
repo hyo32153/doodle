@@ -1,303 +1,126 @@
-import { CLASSES } from './classes.js';
+import { CLASSES } from "./classes.js";
+import {
+  draw,
+  initCanvas,
+  redrawAllStrokes,
+  startDrawing,
+  stopDrawing,
+} from "./modules/drawing.js";
+import { loadModel, predict, schedulePrediction } from "./modules/inference.js";
+import { getInputTensor } from "./modules/preprocess.js";
+import { renderPredictions } from "./modules/ui.js";
 
-const MODEL_URL = './model/model.json';
-const TOP_K = 3;
-const DEBOUNCE_MS = 300;
+// --- 앱 전역 설정값 ---
+// TensorFlow.js가 로딩할 모델 경로
+const MODEL_URL = "./model/model.json";
+// 화면에 표시할 상위 예측 개수
+const TOP_K = 5;
+// 사용자가 그리기를 잠시 멈춘 뒤 예측을 실행하기까지의 지연(ms)
+const DEBOUNCE_MS = 500;
+// 모델 입력 이미지의 한 변 길이(28x28)
 const MODEL_INPUT_SIZE = 28;
 
-// DOM elements
-const canvas = document.getElementById('drawing-canvas');
-const ctx = canvas.getContext('2d', { willReadFrequently: true });
-const clearBtn = document.getElementById('clear-btn');
-const undoBtn = document.getElementById('undo-btn');
-const predictionsEl = document.getElementById('predictions');
-const statusEl = document.getElementById('status');
-const previewCanvas = document.getElementById('preview-canvas');
-const previewCtx = previewCanvas.getContext('2d');
+// --- DOM 참조 ---
+// 메인 드로잉 캔버스와 2D 컨텍스트
+const canvas = document.getElementById("drawing-canvas");
+// 픽셀 읽기(getImageData)를 자주 수행하므로 브라우저 힌트를 활성화
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+// UI 제어 요소
+const clearBtn = document.getElementById("clear-btn");
+const undoBtn = document.getElementById("undo-btn");
+const predictionsEl = document.getElementById("predictions");
+const statusEl = document.getElementById("status");
+// 모델 입력(28x28) 디버그 시각화를 위한 프리뷰 캔버스
+const previewCanvas = document.getElementById("preview-canvas");
+const previewCtx = previewCanvas.getContext("2d");
 
-// State
-let model = null;
-let isDrawing = false;
-let strokes = [];       // Array of strokes, each stroke is an array of {x, y}
-let currentStroke = [];
-let debounceTimer = null;
+// --- 앱 상태 ---
+// model: 로드된 tf.LayersModel
+// isDrawing: 현재 포인터 다운 상태 여부
+// strokes: 완료된 획(stroke) 목록. 각 획은 좌표 배열([{x,y}, ...])
+// currentStroke: 현재 그리는 중인 획
+// debounceTimer: 예측 디바운스 타이머 핸들
+const state = {
+  model: null,
+  isDrawing: false,
+  strokes: [],
+  currentStroke: [],
+  debounceTimer: null,
+};
 
-// --- Model Loading ---
+// 현재 상태를 바탕으로 예측 파이프라인 실행
+// 1) strokes -> 28x28 tensor 전처리
+// 2) 모델 추론
+// 3) 상위 TOP_K 결과 렌더링
+const runPrediction = () =>
+  predict(state, {
+    classes: CLASSES,
+    topK: TOP_K,
+    getInputTensor: (strokes) =>
+      getInputTensor(strokes, MODEL_INPUT_SIZE, previewCtx),
+    renderPredictions: (predictions) =>
+      renderPredictions(predictionsEl, predictions),
+  });
 
-async function loadModel() {
-  try {
-    model = await tf.loadLayersModel(MODEL_URL);
-    statusEl.textContent = 'Model ready - start drawing!';
-    statusEl.className = 'status-bar ready';
-  } catch (err) {
-    statusEl.textContent = `Failed to load model: ${err.message}`;
-    statusEl.className = 'status-bar error';
-    console.error('Model load error:', err);
-  }
-}
+// 짧은 시간 안에 이벤트가 연속 발생해도 예측 호출을 하나로 합치기 위한 래퍼
+const schedulePredictionRun = () =>
+  schedulePrediction(state, runPrediction, DEBOUNCE_MS);
 
-// --- Canvas Drawing ---
-
-function initCanvas() {
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = '#000000';
-}
-
-function getPointerPos(e) {
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-
-  if (e.touches) {
-    return {
-      x: (e.touches[0].clientX - rect.left) * scaleX,
-      y: (e.touches[0].clientY - rect.top) * scaleY,
-    };
-  }
-  return {
-    x: (e.clientX - rect.left) * scaleX,
-    y: (e.clientY - rect.top) * scaleY,
-  };
-}
-
-function startDrawing(e) {
-  e.preventDefault();
-  if (!model) return;
-  isDrawing = true;
-  const pos = getPointerPos(e);
-  currentStroke = [pos];
-  ctx.beginPath();
-  ctx.moveTo(pos.x, pos.y);
-}
-
-function draw(e) {
-  e.preventDefault();
-  if (!isDrawing) return;
-  const pos = getPointerPos(e);
-  currentStroke.push(pos);
-  ctx.lineTo(pos.x, pos.y);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(pos.x, pos.y);
-}
-
-function stopDrawing(e) {
-  if (e) e.preventDefault();
-  if (!isDrawing) return;
-  isDrawing = false;
-  if (currentStroke.length > 0) {
-    strokes.push([...currentStroke]);
-    currentStroke = [];
-  }
-  schedulePrediction();
-}
-
-// --- Preprocessing (coordinate-based, line-thickness independent) ---
-
-function getInputTensor() {
-  if (strokes.length === 0) return null;
-
-  // Collect all points to find bounding box
-  const allPoints = strokes.flat();
-  if (allPoints.length === 0) return null;
-
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of allPoints) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  }
-
-  const drawW = maxX - minX;
-  const drawH = maxY - minY;
-
-  // Handle single-point (dot) drawing
-  if (drawW < 1 && drawH < 1) return null;
-
-  // Fit into 20x20 area centered in 28x28 (Quick Draw standard: 20px content + 4px padding each side)
-  const contentSize = 20;
-  const offset = 4;
-  const maxDim = Math.max(drawW, drawH);
-  const scale = contentSize / maxDim;
-
-  // Center the shorter axis
-  const scaledW = drawW * scale;
-  const scaledH = drawH * scale;
-  const offsetX = offset + (contentSize - scaledW) / 2;
-  const offsetY = offset + (contentSize - scaledH) / 2;
-
-  // Render strokes onto a 28x28 offscreen canvas with fixed stroke width
-  const offscreen = document.createElement('canvas');
-  offscreen.width = MODEL_INPUT_SIZE;
-  offscreen.height = MODEL_INPUT_SIZE;
-  const offCtx = offscreen.getContext('2d');
-
-  // White background
-  offCtx.fillStyle = '#ffffff';
-  offCtx.fillRect(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
-
-  // Draw strokes with normalized coordinates
-  offCtx.strokeStyle = '#000000';
-  offCtx.lineCap = 'round';
-  offCtx.lineJoin = 'round';
-  offCtx.lineWidth = 1.5; // Consistent stroke width at 28x28 scale
-
-  for (const stroke of strokes) {
-    if (stroke.length < 1) continue;
-    offCtx.beginPath();
-    const startX = (stroke[0].x - minX) * scale + offsetX;
-    const startY = (stroke[0].y - minY) * scale + offsetY;
-    offCtx.moveTo(startX, startY);
-
-    for (let i = 1; i < stroke.length; i++) {
-      const px = (stroke[i].x - minX) * scale + offsetX;
-      const py = (stroke[i].y - minY) * scale + offsetY;
-      offCtx.lineTo(px, py);
-    }
-    offCtx.stroke();
-  }
-
-  // Read pixels and convert to tensor
-  const imageData = offCtx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
-  const pixels = imageData.data;
-
-  const input = new Float32Array(MODEL_INPUT_SIZE * MODEL_INPUT_SIZE);
-  for (let i = 0; i < MODEL_INPUT_SIZE * MODEL_INPUT_SIZE; i++) {
-    const r = pixels[i * 4];
-    input[i] = (255 - r) / 255; // Invert: white bg -> 0, black stroke -> 1
-  }
-
-  // Update debug preview (shows what the model actually sees)
-  const previewData = previewCtx.createImageData(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
-  for (let i = 0; i < input.length; i++) {
-    const v = Math.round(input[i] * 255);
-    previewData.data[i * 4] = v;
-    previewData.data[i * 4 + 1] = v;
-    previewData.data[i * 4 + 2] = v;
-    previewData.data[i * 4 + 3] = 255;
-  }
-  previewCtx.putImageData(previewData, 0, 0);
-
-  return tf.tensor4d(input, [1, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, 1]);
-}
-
-// --- Prediction ---
-
-function schedulePrediction() {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(predict, DEBOUNCE_MS);
-}
-
-async function predict() {
-  if (!model) return;
-
-  // Check if canvas is essentially blank
-  if (strokes.length === 0) {
-    renderPredictions([]);
-    return;
-  }
-
-  const inputTensor = getInputTensor();
-  if (!inputTensor) {
-    renderPredictions([]);
-    return;
-  }
-
-  const outputTensor = model.predict(inputTensor);
-  const probabilities = await outputTensor.data();
-
-  // Clean up tensors
-  inputTensor.dispose();
-  outputTensor.dispose();
-
-  // Get top-K predictions
-  const indexed = Array.from(probabilities).map((prob, idx) => ({ idx, prob }));
-  indexed.sort((a, b) => b.prob - a.prob);
-  const topK = indexed.slice(0, TOP_K).map(item => ({
-    className: CLASSES[item.idx].replace(/_/g, ' '),
-    confidence: item.prob,
-  }));
-
-  renderPredictions(topK);
-}
-
-// --- Rendering Predictions ---
-
-function renderPredictions(predictions) {
-  if (predictions.length === 0) {
-    predictionsEl.innerHTML = '<p class="placeholder-text">Draw something to start...</p>';
-    return;
-  }
-
-  predictionsEl.innerHTML = predictions.map(p => {
-    const pct = (p.confidence * 100).toFixed(1);
-    return `
-      <div class="prediction-item">
-        <div class="label-row">
-          <span class="class-name">${p.className}</span>
-          <span class="confidence">${pct}%</span>
-        </div>
-        <div class="bar-track">
-          <div class="bar-fill" style="width: ${pct}%"></div>
-        </div>
-      </div>
-    `;
-  }).join('');
-}
-
-// --- Undo / Clear ---
-
+// 캔버스/획/예측 결과를 모두 초기화
 function clearCanvas() {
-  strokes = [];
-  currentStroke = [];
-  initCanvas();
-  renderPredictions([]);
+  state.strokes = [];
+  state.currentStroke = [];
+  initCanvas(canvas, ctx);
+  renderPredictions(predictionsEl, []);
 }
 
+// 마지막 획 1개만 제거하고 화면을 다시 그림
 function undo() {
-  if (strokes.length === 0) return;
-  strokes.pop();
-  redrawAllStrokes();
-  schedulePrediction();
+  if (state.strokes.length === 0) return;
+  state.strokes.pop();
+  redrawAllStrokes(state, canvas, ctx);
+  schedulePredictionRun();
 }
 
-function redrawAllStrokes() {
-  initCanvas();
-  for (const stroke of strokes) {
-    if (stroke.length < 2) continue;
-    ctx.beginPath();
-    ctx.moveTo(stroke[0].x, stroke[0].y);
-    for (let i = 1; i < stroke.length; i++) {
-      ctx.lineTo(stroke[i].x, stroke[i].y);
-    }
-    ctx.stroke();
-  }
-}
+// --- 포인터 이벤트 바인딩 ---
+// 마우스 입력
+canvas.addEventListener("mousedown", (e) =>
+  startDrawing(e, { state, canvas, ctx }),
+);
+canvas.addEventListener("mousemove", (e) => draw(e, { state, canvas, ctx }));
+canvas.addEventListener("mouseup", (e) =>
+  stopDrawing(e, { state, onStrokeEnd: schedulePredictionRun }),
+);
+canvas.addEventListener("mouseleave", (e) =>
+  stopDrawing(e, { state, onStrokeEnd: schedulePredictionRun }),
+);
 
-// --- Event Listeners ---
+// 터치 입력 (모바일 스크롤/줌 충돌 방지를 위해 passive: false)
+canvas.addEventListener(
+  "touchstart",
+  (e) => startDrawing(e, { state, canvas, ctx }),
+  { passive: false },
+);
+canvas.addEventListener("touchmove", (e) => draw(e, { state, canvas, ctx }), {
+  passive: false,
+});
+canvas.addEventListener(
+  "touchend",
+  (e) => stopDrawing(e, { state, onStrokeEnd: schedulePredictionRun }),
+  { passive: false },
+);
+canvas.addEventListener(
+  "touchcancel",
+  (e) => stopDrawing(e, { state, onStrokeEnd: schedulePredictionRun }),
+  { passive: false },
+);
 
-// Mouse events
-canvas.addEventListener('mousedown', startDrawing);
-canvas.addEventListener('mousemove', draw);
-canvas.addEventListener('mouseup', stopDrawing);
-canvas.addEventListener('mouseleave', stopDrawing);
+// 버튼 이벤트
+clearBtn.addEventListener("click", clearCanvas);
+undoBtn.addEventListener("click", undo);
 
-// Touch events
-canvas.addEventListener('touchstart', startDrawing, { passive: false });
-canvas.addEventListener('touchmove', draw, { passive: false });
-canvas.addEventListener('touchend', stopDrawing, { passive: false });
-canvas.addEventListener('touchcancel', stopDrawing, { passive: false });
-
-// Buttons
-clearBtn.addEventListener('click', clearCanvas);
-undoBtn.addEventListener('click', undo);
-
-// --- Init ---
-
-initCanvas();
-loadModel();
+// --- 초기화 ---
+// 1) 캔버스 기본 스타일/배경 초기화
+// 2) 모델 로드 시작
+initCanvas(canvas, ctx);
+loadModel(state, MODEL_URL, statusEl);

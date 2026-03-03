@@ -1,4 +1,10 @@
-// DoodleNet 345 class names - order matches model output indices
+// DoodleNet 분류 모델의 클래스(라벨) 사전.
+// -----------------------------------------------------------------------------
+// 1) 이 배열은 "모델 출력 벡터의 인덱스"와 정확히 1:1 대응된다.
+//    예: model.predict(...) 결과에서 index가 10이면 CLASSES[10]이 정답 라벨 후보명.
+// 2) 배열 순서가 바뀌면 모델 결과 해석이 즉시 깨지므로, 항목 재정렬/삭제/삽입 금지.
+// 3) 화면 표시 단계에서는 가독성을 위해 밑줄(_)을 공백으로 바꿔 렌더링할 수 있다.
+// 4) 일부 항목은 데이터셋 원문 표기를 유지하므로 대소문자/기호를 그대로 보존한다.
 export const CLASSES = [
   'flashlight', 'belt', 'mushroom', 'pond', 'strawberry', 'pineapple', 'sun',
   'cow', 'ear', 'bush', 'pliers', 'watermelon', 'apple', 'baseball', 'feather',
